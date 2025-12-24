@@ -1,0 +1,126 @@
+# This workflow file should be placed in your homebrew-tap repository at:
+# .github/workflows/update-formula.yml
+#
+# It will automatically update the git-selfies formula when a new release is made
+
+name: Update Formula
+
+on:
+  repository_dispatch:
+    types: [update-formula]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to update to (e.g., 0.2.0)"
+        required: true
+        type: string
+      repo:
+        description: "Source repository (e.g., owner/git-selfies)"
+        required: true
+        type: string
+        default: "biw/git-selfies"
+
+jobs:
+  update-formula:
+    name: Update git-selfies Formula
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            VERSION="${{ github.event.client_payload.version }}"
+            REPO="${{ github.event.client_payload.repo }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+            REPO="${{ github.event.inputs.repo }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "repo=$REPO" >> $GITHUB_OUTPUT
+          echo "Updating formula to version $VERSION from $REPO"
+
+      - name: Download and calculate checksums
+        id: checksums
+        run: |
+          REPO="${{ steps.version.outputs.repo }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          echo "Downloading release archives..."
+
+          # Download each platform archive and calculate SHA256
+          for asset in "git-selfies-macos-aarch64.tar.gz" "git-selfies-macos-x86_64.tar.gz" "git-selfies-linux-x86_64.tar.gz"; do
+            url="https://github.com/${REPO}/releases/download/v${VERSION}/${asset}"
+            echo "Downloading $asset..."
+            if curl -fsSL -o "$asset" "$url"; then
+              sha=$(sha256sum "$asset" | cut -d' ' -f1)
+              # Convert asset name to variable-friendly format
+              var_name=$(echo "$asset" | sed 's/git-selfies-//; s/\.tar\.gz//; s/-/_/g')
+              echo "${var_name}_sha=$sha" >> $GITHUB_OUTPUT
+              echo "  SHA256: $sha"
+            else
+              echo "  Failed to download $asset"
+              exit 1
+            fi
+          done
+
+      - name: Update formula
+        run: |
+          REPO="${{ steps.version.outputs.repo }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          mkdir -p Formula
+
+          cat > Formula/git-selfies.rb << 'EOF'
+          class GitSelfies < Formula
+          desc "Git-based selfies for software developers - a modern lolcommits alternative"
+          homepage "https://github.com/REPO_PLACEHOLDER"
+          version "VERSION_PLACEHOLDER"
+          license "MIT"
+
+          on_macos do
+            if Hardware::CPU.arm?
+              url "https://github.com/REPO_PLACEHOLDER/releases/download/vVERSION_PLACEHOLDER/git-selfies-macos-aarch64.tar.gz"
+              sha256 "MACOS_AARCH64_SHA"
+            else
+              url "https://github.com/REPO_PLACEHOLDER/releases/download/vVERSION_PLACEHOLDER/git-selfies-macos-x86_64.tar.gz"
+              sha256 "MACOS_X86_64_SHA"
+            end
+          end
+
+          on_linux do
+            url "https://github.com/REPO_PLACEHOLDER/releases/download/vVERSION_PLACEHOLDER/git-selfies-linux-x86_64.tar.gz"
+            sha256 "LINUX_X86_64_SHA"
+          end
+
+          def install
+            bin.install "git-selfies"
+          end
+
+          test do
+            system "#{bin}/git-selfies", "--version"
+          end
+          end
+          EOF
+
+          # Replace placeholders
+          sed -i "s|REPO_PLACEHOLDER|${REPO}|g" Formula/git-selfies.rb
+          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" Formula/git-selfies.rb
+          sed -i "s|MACOS_AARCH64_SHA|${{ steps.checksums.outputs.macos_aarch64_sha }}|g" Formula/git-selfies.rb
+          sed -i "s|MACOS_X86_64_SHA|${{ steps.checksums.outputs.macos_x86_64_sha }}|g" Formula/git-selfies.rb
+          sed -i "s|LINUX_X86_64_SHA|${{ steps.checksums.outputs.linux_x86_64_sha }}|g" Formula/git-selfies.rb
+
+          echo "Updated formula:"
+          cat Formula/git-selfies.rb
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/git-selfies.rb
+          git commit -m "Update git-selfies to v${{ steps.version.outputs.version }}"
+          git push
